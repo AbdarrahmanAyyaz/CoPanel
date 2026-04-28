@@ -37,7 +37,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className={`${serif.variable} ${sans.variable} ${mono.variable}`}>
-      <body className="bg-bg text-fg font-sans antialiased">{children}</body>
+      <body className="bg-bg text-fg font-sans antialiased" suppressHydrationWarning>
+        {children}
+      </body>
     </html>
   );
 }
