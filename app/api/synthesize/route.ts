@@ -10,17 +10,31 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 interface SynthesizeRequest {
-  pitch?: unknown;
+  description?: unknown;
   reactions?: unknown;
+  scores?: unknown;
 }
 
 function pickReactions(value: unknown): Partial<Record<PersonaId, string>> {
   if (!value || typeof value !== "object") return {};
   const v = value as Record<string, unknown>;
   const out: Partial<Record<PersonaId, string>> = {};
-  for (const id of ["engineer", "investor", "customer"] as PersonaId[]) {
+  for (const id of ["privacy", "compliance", "security"] as PersonaId[]) {
     const r = v[id];
     if (typeof r === "string" && r.trim().length > 0) out[id] = r;
+  }
+  return out;
+}
+
+function pickScores(value: unknown): Partial<Record<PersonaId, number>> {
+  if (!value || typeof value !== "object") return {};
+  const v = value as Record<string, unknown>;
+  const out: Partial<Record<PersonaId, number>> = {};
+  for (const id of ["privacy", "compliance", "security"] as PersonaId[]) {
+    const s = v[id];
+    if (typeof s === "number" && Number.isFinite(s)) {
+      out[id] = Math.max(0, Math.min(100, Math.round(s)));
+    }
   }
   return out;
 }
@@ -33,15 +47,21 @@ export async function POST(req: Request) {
     return new Response("invalid json", { status: 400 });
   }
 
-  const pitch = typeof body.pitch === "string" ? body.pitch.trim() : "";
+  const description =
+    typeof body.description === "string" ? body.description.trim() : "";
   const reactions = pickReactions(body.reactions);
+  const scores = pickScores(body.scores);
 
-  if (!pitch) return new Response("pitch required", { status: 400 });
+  if (!description) return new Response("description required", { status: 400 });
   if (Object.keys(reactions).length === 0) {
     return new Response("at least one reaction required", { status: 400 });
   }
 
-  const userMessage = buildSynthesisUserMessage({ pitch, reactions });
+  const userMessage = buildSynthesisUserMessage({
+    description,
+    reactions,
+    scores,
+  });
   const client = new Anthropic();
   const upstreamAbort = new AbortController();
 
@@ -71,7 +91,7 @@ export async function POST(req: Request) {
         const response = client.messages.stream(
           {
             model: MODEL_ID,
-            max_tokens: 600,
+            max_tokens: 1200,
             system: SYNTHESIS_SYSTEM_PROMPT,
             messages: [{ role: "user", content: userMessage }],
           },

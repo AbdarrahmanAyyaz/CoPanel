@@ -1,7 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { PERSONAS, PERSONA_ORDER, type PersonaId } from "@/lib/personas";
+import {
+  PERSONAS,
+  PERSONA_ORDER,
+  parseScore,
+  type PersonaId,
+} from "@/lib/personas";
 import { takeChunk } from "@/lib/chunkText";
 
 type Phase = "idle" | "running" | "synthesizing" | "complete";
@@ -19,10 +24,12 @@ interface SynthesisData {
   error: boolean;
 }
 
+const PREFILL = `A patient intake agent for a telehealth platform that takes symptom descriptions and routes patients to appropriate specialists. The agent stores conversation history for follow-up visits and flags urgent cases for immediate review.`;
+
 const CADENCE = {
-  engineer: { base: 75, jitter: 60 },
-  investor: { base: 105, jitter: 60 },
-  customer: { base: 95, jitter: 60 },
+  privacy: { base: 75, jitter: 60 },
+  compliance: { base: 105, jitter: 60 },
+  security: { base: 95, jitter: 60 },
   synthesis: { base: 140, jitter: 60 },
 } as const;
 
@@ -34,36 +41,75 @@ function cadenceFor(id: PersonaId | "synthesis") {
   return c.base + Math.random() * c.jitter;
 }
 
+function scoreColor(score: number | null): string {
+  if (score === null) return "var(--fg-faint)";
+  if (score >= 90) return "var(--privacy)";
+  if (score >= 70) return "#facc15";
+  if (score >= 50) return "#fb923c";
+  return "#f87171";
+}
+
+function scoreToGrade(score: number | null): string {
+  if (score === null) return "—";
+  if (score >= 90) return "A";
+  if (score >= 80) return "B";
+  if (score >= 70) return "C";
+  if (score >= 60) return "D";
+  return "F";
+}
+
+function aggregateGrade(scores: Record<PersonaId, number | null>): {
+  grade: string;
+  color: string;
+} {
+  const numeric = Object.values(scores).filter(
+    (s): s is number => typeof s === "number",
+  );
+  if (numeric.length === 0) return { grade: "—", color: "var(--fg-faint)" };
+  const min = Math.min(...numeric);
+  return { grade: scoreToGrade(min), color: scoreColor(min) };
+}
+
 export default function Page() {
-  const [pitch, setPitch] = useState("");
+  const [description, setDescription] = useState(PREFILL);
   const [phase, setPhase] = useState<Phase>("idle");
   const [columns, setColumns] = useState<Record<PersonaId, ColumnData>>({
-    engineer: idleColumn(),
-    investor: idleColumn(),
-    customer: idleColumn(),
+    privacy: idleColumn(),
+    compliance: idleColumn(),
+    security: idleColumn(),
+  });
+  const [scores, setScores] = useState<Record<PersonaId, number | null>>({
+    privacy: null,
+    compliance: null,
+    security: null,
   });
   const [synthesis, setSynthesis] = useState<SynthesisData>(idleSynthesis());
 
-  // Refs that consumers read — avoid stale closures.
+  // Refs (audit-fixed cancellation pattern)
   const personaBuffers = useRef<Record<PersonaId, string>>({
-    engineer: "",
-    investor: "",
-    customer: "",
+    privacy: "",
+    compliance: "",
+    security: "",
   });
   const personaStreamDone = useRef<Record<PersonaId, boolean>>({
-    engineer: false,
-    investor: false,
-    customer: false,
+    privacy: false,
+    compliance: false,
+    security: false,
   });
   const personaFinalText = useRef<Record<PersonaId, string>>({
-    engineer: "",
-    investor: "",
-    customer: "",
+    privacy: "",
+    compliance: "",
+    security: "",
   });
   const columnErrorRef = useRef<Record<PersonaId, boolean>>({
-    engineer: false,
-    investor: false,
-    customer: false,
+    privacy: false,
+    compliance: false,
+    security: false,
+  });
+  const scoreParsedRef = useRef<Record<PersonaId, boolean>>({
+    privacy: false,
+    compliance: false,
+    security: false,
   });
   const synthesisBuffer = useRef("");
   const synthesisStreamDone = useRef(false);
@@ -80,18 +126,20 @@ export default function Page() {
     cancelledRef.current = true;
     abortRef.current?.abort();
     clearTimers();
-    personaBuffers.current = { engineer: "", investor: "", customer: "" };
-    personaStreamDone.current = { engineer: false, investor: false, customer: false };
-    personaFinalText.current = { engineer: "", investor: "", customer: "" };
-    columnErrorRef.current = { engineer: false, investor: false, customer: false };
+    personaBuffers.current = { privacy: "", compliance: "", security: "" };
+    personaStreamDone.current = { privacy: false, compliance: false, security: false };
+    personaFinalText.current = { privacy: "", compliance: "", security: "" };
+    columnErrorRef.current = { privacy: false, compliance: false, security: false };
+    scoreParsedRef.current = { privacy: false, compliance: false, security: false };
     synthesisBuffer.current = "";
     synthesisStreamDone.current = false;
     abortRef.current = null;
     setColumns({
-      engineer: idleColumn(),
-      investor: idleColumn(),
-      customer: idleColumn(),
+      privacy: idleColumn(),
+      compliance: idleColumn(),
+      security: idleColumn(),
     });
+    setScores({ privacy: null, compliance: null, security: null });
     setSynthesis(idleSynthesis());
     setPhase("idle");
   }, [clearTimers]);
@@ -103,6 +151,19 @@ export default function Page() {
       clearTimers();
     };
   }, [clearTimers]);
+
+  const tryParseScoreFromAccumulated = useCallback((id: PersonaId) => {
+    if (scoreParsedRef.current[id]) return;
+    const fullText = personaFinalText.current[id];
+    // Wait for either a newline (to be sure SCORE: line ended) or 80+ chars (to give up).
+    if (fullText.indexOf("\n") < 0 && fullText.length < 80) return;
+    const { score, body } = parseScore(fullText);
+    scoreParsedRef.current[id] = true;
+    if (!cancelledRef.current) {
+      setScores((prev) => ({ ...prev, [id]: score }));
+    }
+    personaBuffers.current[id] = body;
+  }, []);
 
   const startColumnConsumer = useCallback(
     (id: PersonaId, onAllChunksFlushed: () => void) => {
@@ -164,7 +225,7 @@ export default function Page() {
         const res = await fetch("/api/persona", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pitch, persona: id }),
+          body: JSON.stringify({ description, persona: id }),
           signal,
         });
         if (!res.ok || !res.body) {
@@ -184,16 +245,25 @@ export default function Page() {
             if (cancelledRef.current) return;
             setColumns((prev) => ({ ...prev, [id]: { ...prev[id], state: "streaming" } }));
           }
-          personaBuffers.current[id] += text;
           personaFinalText.current[id] += text;
+          if (!scoreParsedRef.current[id]) {
+            tryParseScoreFromAccumulated(id);
+          } else {
+            personaBuffers.current[id] += text;
+          }
         }
         const tail = decoder.decode();
         if (tail) {
-          personaBuffers.current[id] += tail;
           personaFinalText.current[id] += tail;
         }
         if (cancelledRef.current) return;
-        // No bytes at all → treat as a soft error.
+        // Force a final score-parse attempt at end-of-stream.
+        if (!scoreParsedRef.current[id]) {
+          const { score, body } = parseScore(personaFinalText.current[id]);
+          scoreParsedRef.current[id] = true;
+          setScores((prev) => ({ ...prev, [id]: score }));
+          personaBuffers.current[id] = body;
+        }
         if (personaFinalText.current[id].trim().length === 0) {
           columnErrorRef.current[id] = true;
           setColumns((prev) => ({ ...prev, [id]: { ...prev[id], error: true } }));
@@ -207,15 +277,22 @@ export default function Page() {
         setColumns((prev) => ({ ...prev, [id]: { ...prev[id], error: true, state: "done" } }));
       }
     },
-    [pitch],
+    [description, tryParseScoreFromAccumulated],
   );
 
   const fetchSynthesisStream = useCallback(
     async (signal: AbortSignal) => {
       const reactions: Partial<Record<PersonaId, string>> = {};
+      const finalScores: Partial<Record<PersonaId, number>> = {};
       for (const id of PERSONA_ORDER) {
         const txt = personaFinalText.current[id].trim();
-        if (txt && !columnErrorRef.current[id]) reactions[id] = txt;
+        if (txt && !columnErrorRef.current[id]) {
+          // Strip the SCORE: line before sending to synthesis.
+          const { body } = parseScore(txt);
+          reactions[id] = body || txt;
+        }
+        const s = scores[id];
+        if (typeof s === "number") finalScores[id] = s;
       }
       if (Object.keys(reactions).length === 0) {
         synthesisStreamDone.current = true;
@@ -227,7 +304,7 @@ export default function Page() {
         const res = await fetch("/api/synthesize", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pitch, reactions }),
+          body: JSON.stringify({ description, reactions, scores: finalScores }),
           signal,
         });
         if (!res.ok || !res.body) throw new Error(`synthesize ${res.status}`);
@@ -257,32 +334,33 @@ export default function Page() {
         setSynthesis((prev) => ({ ...prev, error: true }));
       }
     },
-    [pitch],
+    [description, scores],
   );
 
   const convene = useCallback(async () => {
-    if (!pitch.trim()) return;
+    if (!description.trim()) return;
     cancelledRef.current = false;
     clearTimers();
-    personaBuffers.current = { engineer: "", investor: "", customer: "" };
-    personaStreamDone.current = { engineer: false, investor: false, customer: false };
-    personaFinalText.current = { engineer: "", investor: "", customer: "" };
-    columnErrorRef.current = { engineer: false, investor: false, customer: false };
+    personaBuffers.current = { privacy: "", compliance: "", security: "" };
+    personaStreamDone.current = { privacy: false, compliance: false, security: false };
+    personaFinalText.current = { privacy: "", compliance: "", security: "" };
+    columnErrorRef.current = { privacy: false, compliance: false, security: false };
+    scoreParsedRef.current = { privacy: false, compliance: false, security: false };
     synthesisBuffer.current = "";
     synthesisStreamDone.current = false;
     setSynthesis(idleSynthesis());
+    setScores({ privacy: null, compliance: null, security: null });
     setColumns({
-      engineer: { ...idleColumn(), state: "pending" },
-      investor: { ...idleColumn(), state: "pending" },
-      customer: { ...idleColumn(), state: "pending" },
+      privacy: { ...idleColumn(), state: "pending" },
+      compliance: { ...idleColumn(), state: "pending" },
+      security: { ...idleColumn(), state: "pending" },
     });
     setPhase("running");
 
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
-    // 30s watchdog: any persona that hasn't produced bytes by then is force-errored
-    // so the synthesis trigger isn't held hostage by a wedged stream.
+    // 30s watchdog: any persona that hasn't produced bytes by then is force-errored.
     const watchdog = setTimeout(() => {
       if (cancelledRef.current) return;
       for (const id of PERSONA_ORDER) {
@@ -298,12 +376,10 @@ export default function Page() {
     }, 30000);
     consumerTimers.current.add(watchdog);
 
-    // Track when each column has finished revealing chunks.
     let finishedColumns = 0;
     const onColumnFlushed = () => {
       finishedColumns += 1;
       if (finishedColumns === PERSONA_ORDER.length && !cancelledRef.current) {
-        // 900ms beat of silence, then synthesis.
         const t = setTimeout(() => {
           if (cancelledRef.current) return;
           setPhase("synthesizing");
@@ -319,7 +395,7 @@ export default function Page() {
       void fetchPersonaStream(id, ctrl.signal);
     }
   }, [
-    pitch,
+    description,
     clearTimers,
     fetchPersonaStream,
     fetchSynthesisStream,
@@ -327,34 +403,35 @@ export default function Page() {
     startSynthesisConsumer,
   ]);
 
-  const canConvene = pitch.trim().length > 0 && phase === "idle";
+  const canConvene = description.trim().length > 0 && phase === "idle";
   const submissionDimmed = phase !== "idle";
   const benchDimmed = phase === "synthesizing" || phase === "complete";
 
   return (
     <main className="mx-auto w-full max-w-panel px-6 pb-24 pt-14 md:px-16 md:pb-40 md:pt-24">
       <Masthead />
-
       <Hero />
-
       <SubmissionCard
-        pitch={pitch}
-        onChange={setPitch}
+        description={description}
+        onChange={setDescription}
         onConvene={convene}
         canConvene={canConvene}
         phase={phase}
         dimmed={submissionDimmed}
       />
-
-      <Bench columns={columns} dimmed={benchDimmed} phase={phase} />
-
+      <Bench
+        columns={columns}
+        scores={scores}
+        dimmed={benchDimmed}
+        phase={phase}
+      />
       <Synthesis
         synthesis={synthesis}
+        scores={scores}
         phase={phase}
         onReset={reset}
       />
-
-      <Colophon />
+      <Disclaimer />
     </main>
   );
 }
@@ -362,9 +439,14 @@ export default function Page() {
 function Masthead() {
   return (
     <header className="flex items-baseline justify-between border-b border-rule pb-6">
-      <div className="font-serif text-[30px] leading-none tracking-[-0.01em]">The Panel</div>
-      <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-fg-faint">
-        Vol. I · Live Edition
+      <div className="font-serif text-[30px] leading-none tracking-[-0.01em]">
+        The Panel
+      </div>
+      <div className="hidden font-mono text-[11px] uppercase tracking-[0.18em] text-fg-faint md:block">
+        Pre-build readiness · not legal or security advice
+      </div>
+      <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-fg-faint md:hidden">
+        Pre-build readiness
       </div>
     </header>
   );
@@ -376,18 +458,19 @@ function Hero() {
       <h1 className="font-serif text-[clamp(64px,8vw,112px)] leading-[1.05] tracking-[-0.025em]">
         Three reviewers.
         <br />
-        One pitch.
+        One agent.
       </h1>
-      <p className="mt-12 max-w-[42ch] font-serif text-[22px] leading-[1.5] text-fg-dim md:mt-16">
-        An engineer, an investor, and a customer read your pitch in parallel. A fourth
-        editor reads them and writes the verdict.
+      <p className="mt-12 max-w-[46ch] font-serif text-[22px] leading-[1.5] text-fg-dim md:mt-16">
+        A privacy officer, a compliance auditor, and a security engineer review
+        your AI agent design before you build it. Each scores it 0–100. The
+        editor synthesizes a Pre-Build Readiness Brief.
       </p>
     </section>
   );
 }
 
 interface SubmissionProps {
-  pitch: string;
+  description: string;
   onChange: (v: string) => void;
   onConvene: () => void;
   canConvene: boolean;
@@ -396,7 +479,7 @@ interface SubmissionProps {
 }
 
 function SubmissionCard(props: SubmissionProps) {
-  const { pitch, onChange, onConvene, canConvene, phase, dimmed } = props;
+  const { description, onChange, onConvene, canConvene, phase, dimmed } = props;
   return (
     <section
       className="mt-[72px] transition-[opacity,filter] duration-[600ms] ease"
@@ -407,26 +490,26 @@ function SubmissionCard(props: SubmissionProps) {
     >
       <div className="flex items-center gap-4">
         <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-fg-faint">
-          Submission
+          Agent Description
         </span>
         <span className="h-px flex-1 bg-rule" />
       </div>
-      <div className="border-y border-rule py-7 mt-5">
+      <div className="mt-5 border-y border-rule py-7">
         <textarea
-          value={pitch}
+          value={description}
           onChange={(e) => onChange(e.target.value)}
-          placeholder="Paste your pitch."
-          rows={4}
-          aria-label="Pitch"
+          placeholder="Describe the AI agent you want to build."
+          rows={5}
+          aria-label="Agent description"
           className="font-serif text-[22px] leading-[1.5] tracking-[-0.005em] md:text-[26px]"
           disabled={phase !== "idle"}
         />
       </div>
       <div className="mt-7 flex items-center justify-between">
         <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-fg-faint">
-          {pitch.trim().length === 0
+          {description.trim().length === 0
             ? "—"
-            : `${pitch.trim().split(/\s+/).filter(Boolean).length} words`}
+            : `${description.trim().split(/\s+/).filter(Boolean).length} words`}
         </span>
         <button
           onClick={onConvene}
@@ -442,11 +525,12 @@ function SubmissionCard(props: SubmissionProps) {
 
 interface BenchProps {
   columns: Record<PersonaId, ColumnData>;
+  scores: Record<PersonaId, number | null>;
   dimmed: boolean;
   phase: Phase;
 }
 
-function Bench({ columns, dimmed, phase }: BenchProps) {
+function Bench({ columns, scores, dimmed, phase }: BenchProps) {
   return (
     <section
       className="mt-[120px] transition-[opacity,filter] duration-[700ms] ease"
@@ -470,7 +554,7 @@ function Bench({ columns, dimmed, phase }: BenchProps) {
             key={id}
             id={id}
             data={columns[id]}
-            isFirst={idx === 0}
+            score={scores[id]}
             isLast={idx === PERSONA_ORDER.length - 1}
           />
         ))}
@@ -485,23 +569,24 @@ function benchStatus(columns: Record<PersonaId, ColumnData>, phase: Phase) {
     const anyStreaming = PERSONA_ORDER.some((id) => columns[id].state === "streaming");
     const anyPending = PERSONA_ORDER.some((id) => columns[id].state === "pending");
     if (anyPending && !anyStreaming) return "The panel is reading…";
-    return "The panel is reacting…";
+    return "The panel is reviewing…";
   }
-  if (phase === "synthesizing") return "The editor is writing the verdict…";
+  if (phase === "synthesizing") return "The editor is preparing your brief…";
   return "The panel has spoken.";
 }
 
 interface ColumnProps {
   id: PersonaId;
   data: ColumnData;
-  isFirst: boolean;
+  score: number | null;
   isLast: boolean;
 }
 
-function Column({ id, data, isLast }: ColumnProps) {
+function Column({ id, data, score, isLast }: ColumnProps) {
   const persona = PERSONAS[id];
   const accent = persona.accentVar;
   const showAccent = data.state === "streaming" || data.state === "done";
+  const showScore = data.state === "streaming" || data.state === "done";
 
   return (
     <article
@@ -509,7 +594,6 @@ function Column({ id, data, isLast }: ColumnProps) {
         isLast ? "md:border-r" : ""
       }`}
     >
-      {/* Left accent rule (desktop only) */}
       <div
         aria-hidden
         className="absolute left-0 top-0 hidden w-px md:block"
@@ -536,7 +620,9 @@ function Column({ id, data, isLast }: ColumnProps) {
         <ColumnStatus state={data.state} accent={accent} />
       </header>
 
-      <div className="mt-8 font-sans text-[16px] leading-[1.6]">
+      <ScoreBadge show={showScore} score={score} error={data.error} />
+
+      <div className="mt-6 font-sans text-[16px] leading-[1.6]">
         {data.state === "idle" && (
           <span className="font-serif italic text-fg-faint text-[20px]">Idle.</span>
         )}
@@ -632,51 +718,122 @@ function ColumnStatus({ state, accent }: { state: ColumnState; accent: string })
   );
 }
 
+function ScoreBadge({
+  show,
+  score,
+  error,
+}: {
+  show: boolean;
+  score: number | null;
+  error: boolean;
+}) {
+  if (!show) {
+    return <div className="mt-8 h-[88px]" aria-hidden />;
+  }
+  if (error) {
+    return (
+      <div className="mt-8 flex items-baseline gap-2">
+        <span
+          className="font-serif text-[72px] leading-[0.85] tabular-nums"
+          style={{ color: "var(--fg-faint)" }}
+        >
+          —
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-8 flex items-baseline gap-2">
+      <span
+        className="font-serif text-[80px] leading-[0.85] tabular-nums transition-colors duration-300 md:text-[88px]"
+        style={{ color: scoreColor(score) }}
+      >
+        {score === null ? "?" : score}
+      </span>
+      <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-fg-faint">
+        / 100
+      </span>
+    </div>
+  );
+}
+
 interface SynthesisProps {
   synthesis: SynthesisData;
+  scores: Record<PersonaId, number | null>;
   phase: Phase;
   onReset: () => void;
 }
 
-function Synthesis({ synthesis, phase, onReset }: SynthesisProps) {
+function Synthesis({ synthesis, scores, phase, onReset }: SynthesisProps) {
   if (phase === "idle" || phase === "running") return null;
+  const { grade, color: gradeColor } = aggregateGrade(scores);
+  const synthesisText = synthesis.chunks.join("");
   return (
-    <section className="mt-[140px] opacity-0 animate-sectionRise" style={{ animationFillMode: "forwards" }}>
-      <div className="mx-auto max-w-[70ch]">
-        <div className="flex items-baseline gap-4">
-          <span className="font-serif italic text-[28px] tracking-[-0.01em]">The Verdict</span>
+    <section
+      className="mt-[140px] opacity-0 animate-sectionRise"
+      style={{ animationFillMode: "forwards" }}
+    >
+      <div className="flex items-baseline gap-4">
+        <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-fg-faint">
+          Pre-Build Readiness Brief
+        </span>
+        <span
+          aria-hidden
+          className="h-px flex-1 origin-left scale-x-0 animate-ruleDraw bg-rule"
+          style={{ animationFillMode: "forwards" }}
+        />
+      </div>
+      <div className="mx-auto mt-12 max-w-[70ch]">
+        <div className="flex items-baseline gap-6 md:gap-12">
           <span
-            aria-hidden
-            className="h-px flex-1 origin-left scale-x-0 animate-ruleDraw bg-rule"
-            style={{ animationFillMode: "forwards" }}
-          />
+            className="font-serif leading-[0.85] tracking-[-0.02em]"
+            style={{
+              color: gradeColor,
+              fontSize: "clamp(112px, 14vw, 168px)",
+            }}
+          >
+            {grade}
+          </span>
+          <div className="flex-1">
+            <div className="mb-3 font-mono text-[11px] uppercase tracking-[0.18em] text-fg-faint">
+              Overall Readiness
+            </div>
+            <p className="font-serif italic text-[20px] leading-[1.3] text-fg-dim md:text-[22px]">
+              Based on the lowest reviewer score.
+            </p>
+          </div>
         </div>
-        <div className="mt-8 font-serif text-[22px] leading-[1.5] tracking-[-0.005em] md:text-[26px]">
+
+        <div className="mt-16">
           {synthesis.state === "idle" && (
-            <span className="font-serif italic text-fg-dim">The editor is writing…</span>
-          )}
-          {synthesis.error && synthesis.chunks.length === 0 && (
-            <span className="text-fg-faint">— the editor stepped out. Try another version.</span>
-          )}
-          {synthesis.chunks.length > 0 && (
-            <p className="whitespace-pre-wrap">
-              <DropCapText chunks={synthesis.chunks} />
-              {synthesis.state === "streaming" && (
-                <span
-                  aria-hidden
-                  className="ml-[1px] inline-block h-[1em] w-[2px] translate-y-[2px] animate-caretBlink bg-fg"
-                />
-              )}
+            <p className="font-serif italic text-[20px] text-fg-dim">
+              The editor is preparing your brief…
             </p>
           )}
+          {synthesis.error && synthesis.chunks.length === 0 && (
+            <p className="text-fg-faint">
+              — the editor stepped out. Try another agent.
+            </p>
+          )}
+          {synthesis.chunks.length > 0 && <MarkdownBrief text={synthesisText} />}
+          {synthesis.state === "streaming" && (
+            <span
+              aria-hidden
+              className="ml-1 inline-block h-[1em] w-[2px] translate-y-[2px] animate-caretBlink bg-fg"
+            />
+          )}
         </div>
+
         {phase === "complete" && (
-          <div className="mt-12 flex items-center gap-6 opacity-0 animate-chunkInSlow" style={{ animationDelay: "1200ms", animationFillMode: "forwards" }}>
+          <div
+            className="mt-16 flex items-center gap-6 opacity-0 animate-chunkInSlow"
+            style={{ animationDelay: "1200ms", animationFillMode: "forwards" }}
+          >
             <button
               onClick={onReset}
               className="border border-rule px-5 py-3 font-sans text-[13px] font-medium uppercase tracking-[0.06em] hover:border-fg"
             >
-              Try another version
+              Try another agent
             </button>
             <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-fg-faint">
               The panel has spoken.
@@ -688,56 +845,145 @@ function Synthesis({ synthesis, phase, onReset }: SynthesisProps) {
   );
 }
 
-function DropCapText({ chunks }: { chunks: string[] }) {
-  if (chunks.length === 0) return null;
-  // Find the first letter (skip leading whitespace, punctuation, quotes) to use as the drop cap.
-  const first = chunks[0];
-  const capMatch = first.match(/[A-Za-z]/);
-  if (!capMatch || capMatch.index === undefined) {
-    return (
-      <>
-        {chunks.map((chunk, i) => (
-          <span key={i} className="inline animate-chunkInSlow opacity-0" style={{ animationFillMode: "forwards" }}>
-            {chunk}
-          </span>
-        ))}
-      </>
-    );
+type Block =
+  | { kind: "h2"; content: string }
+  | { kind: "p"; content: string }
+  | { kind: "ul"; items: string[] };
+
+function parseMarkdown(text: string): Block[] {
+  const blocks: Block[] = [];
+  const lines = text.split("\n");
+  let currentP: string[] | null = null;
+  let currentList: string[] | null = null;
+  let skippedFirstReadinessHeading = false;
+
+  const flushP = () => {
+    if (currentP && currentP.length > 0) {
+      blocks.push({ kind: "p", content: currentP.join(" ") });
+    }
+    currentP = null;
+  };
+  const flushList = () => {
+    if (currentList && currentList.length > 0) {
+      blocks.push({ kind: "ul", items: [...currentList] });
+    }
+    currentList = null;
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("## ")) {
+      flushP();
+      flushList();
+      const heading = trimmed.slice(3).trim();
+      if (
+        !skippedFirstReadinessHeading &&
+        /^overall readiness/i.test(heading)
+      ) {
+        skippedFirstReadinessHeading = true;
+        continue;
+      }
+      blocks.push({ kind: "h2", content: heading });
+    } else if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+      flushP();
+      if (!currentList) currentList = [];
+      currentList.push(trimmed.slice(2));
+    } else if (trimmed === "") {
+      flushP();
+      flushList();
+    } else {
+      flushList();
+      if (!currentP) currentP = [];
+      currentP.push(trimmed);
+    }
   }
-  const cap = capMatch[0];
-  const capIdx = capMatch.index;
-  const firstWithoutCap = first.slice(0, capIdx) + first.slice(capIdx + 1);
-  const restChunks = chunks.slice(1);
+  flushP();
+  flushList();
+  return blocks;
+}
+
+function MarkdownBrief({ text }: { text: string }) {
+  const blocks = parseMarkdown(text);
   return (
-    <>
-      <span
-        className="float-left mr-3 mt-1 font-serif text-[96px] leading-[0.85] animate-chunkInSlow opacity-0"
-        style={{ animationFillMode: "forwards" }}
-      >
-        {cap}
-      </span>
-      <span className="inline animate-chunkInSlow opacity-0" style={{ animationFillMode: "forwards" }}>
-        {firstWithoutCap}
-      </span>
-      {restChunks.map((chunk, i) => (
-        <span
-          key={i + 1}
-          className="inline animate-chunkInSlow opacity-0"
-          style={{ animationFillMode: "forwards" }}
-        >
-          {chunk}
-        </span>
-      ))}
-    </>
+    <div>
+      {blocks.map((b, i) => {
+        if (b.kind === "h2") {
+          return (
+            <h2
+              key={i}
+              className="mb-4 mt-12 font-mono text-[11px] uppercase tracking-[0.18em] text-fg-dim first:mt-0"
+            >
+              {b.content}
+            </h2>
+          );
+        }
+        if (b.kind === "p") {
+          return (
+            <p
+              key={i}
+              className="font-serif text-[20px] leading-[1.5] tracking-[-0.005em] text-fg md:text-[22px]"
+            >
+              {renderInline(b.content)}
+            </p>
+          );
+        }
+        return (
+          <ul key={i} className="space-y-3">
+            {b.items.map((item, j) => (
+              <li
+                key={j}
+                className="flex gap-4 font-serif text-[18px] leading-[1.5] tracking-[-0.005em] text-fg md:text-[20px]"
+              >
+                <span className="select-none text-fg-faint">—</span>
+                <span>{renderInline(item)}</span>
+              </li>
+            ))}
+          </ul>
+        );
+      })}
+    </div>
   );
 }
 
-function Colophon() {
+// Minimal inline markdown: **bold** and *italic*. Plain text otherwise.
+function renderInline(text: string): React.ReactNode {
+  const out: React.ReactNode[] = [];
+  const pattern = /(\*\*[^*]+\*\*|\*[^*]+\*)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let key = 0;
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      out.push(text.slice(lastIndex, match.index));
+    }
+    const token = match[0];
+    if (token.startsWith("**")) {
+      out.push(
+        <strong key={key++} className="font-medium">
+          {token.slice(2, -2)}
+        </strong>,
+      );
+    } else {
+      out.push(
+        <em key={key++} className="italic">
+          {token.slice(1, -1)}
+        </em>,
+      );
+    }
+    lastIndex = match.index + token.length;
+  }
+  if (lastIndex < text.length) out.push(text.slice(lastIndex));
+  return out.length === 0 ? text : out;
+}
+
+function Disclaimer() {
   return (
-    <footer className="mt-40 border-t border-rule pt-8 font-mono text-[11px] uppercase tracking-[0.18em] text-fg-faint">
-      <div className="flex flex-wrap items-baseline justify-between gap-4">
-        <span>The Panel · Vol. I</span>
-        <span>Built for stage. Read from the back of the room.</span>
+    <footer className="mt-32 border-t border-rule pt-8">
+      <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-fg-faint">
+        <span className="text-fg-dim">Not legal or security advice.</span>{" "}
+        Pre-build readiness brief only. The Panel pattern-matches considerations
+        across privacy, compliance, and security; it does not replace counsel,
+        a real audit, or a real threat model.
       </div>
     </footer>
   );

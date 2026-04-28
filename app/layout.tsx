@@ -25,9 +25,9 @@ const mono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "The Panel — Three reviewers. One pitch.",
+  title: "The Panel — Pre-build readiness brief",
   description:
-    "A live, multi-agent pitch evaluator. Engineer, investor, and customer react in parallel.",
+    "A privacy officer, compliance auditor, and security engineer review your AI agent design before you build it.",
 };
 
 export default function RootLayout({

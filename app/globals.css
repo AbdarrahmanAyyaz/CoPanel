@@ -10,9 +10,9 @@
   --fg-faint: rgba(245, 243, 238, 0.34);
   --rule: rgba(245, 243, 238, 0.10);
   --rule-soft: rgba(245, 243, 238, 0.05);
-  --engineer: #34d399;
-  --vc: #a78bfa;
-  --customer: #fbbf24;
+  --privacy: #34d399;
+  --compliance: #a78bfa;
+  --security: #fbbf24;
 }
 
 html,

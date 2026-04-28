@@ -5,12 +5,12 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 interface PersonaRequest {
-  pitch?: unknown;
+  description?: unknown;
   persona?: unknown;
 }
 
 function isPersonaId(v: unknown): v is PersonaId {
-  return v === "engineer" || v === "investor" || v === "customer";
+  return v === "privacy" || v === "compliance" || v === "security";
 }
 
 export async function POST(req: Request) {
@@ -21,10 +21,11 @@ export async function POST(req: Request) {
     return new Response("invalid json", { status: 400 });
   }
 
-  const pitch = typeof body.pitch === "string" ? body.pitch.trim() : "";
+  const description =
+    typeof body.description === "string" ? body.description.trim() : "";
   const personaId = isPersonaId(body.persona) ? body.persona : null;
 
-  if (!pitch) return new Response("pitch required", { status: 400 });
+  if (!description) return new Response("description required", { status: 400 });
   if (!personaId) return new Response("invalid persona", { status: 400 });
 
   const persona = PERSONAS[personaId];
@@ -57,9 +58,9 @@ export async function POST(req: Request) {
         const response = client.messages.stream(
           {
             model: MODEL_ID,
-            max_tokens: 400,
+            max_tokens: 600,
             system: persona.systemPrompt,
-            messages: [{ role: "user", content: pitch }],
+            messages: [{ role: "user", content: description }],
           },
           { signal: upstreamAbort.signal },
         );
