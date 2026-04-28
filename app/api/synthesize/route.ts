@@ -43,19 +43,43 @@ export async function POST(req: Request) {
 
   const userMessage = buildSynthesisUserMessage({ pitch, reactions });
   const client = new Anthropic();
+  const upstreamAbort = new AbortController();
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const encoder = new TextEncoder();
+      let closed = false;
+      const safeClose = () => {
+        if (closed) return;
+        closed = true;
+        try {
+          controller.close();
+        } catch {
+          /* already torn down */
+        }
+      };
+      const safeError = (err: unknown) => {
+        if (closed) return;
+        closed = true;
+        try {
+          controller.error(err);
+        } catch {
+          /* already torn down */
+        }
+      };
       try {
-        const response = client.messages.stream({
-          model: MODEL_ID,
-          max_tokens: 600,
-          system: SYNTHESIS_SYSTEM_PROMPT,
-          messages: [{ role: "user", content: userMessage }],
-        });
+        const response = client.messages.stream(
+          {
+            model: MODEL_ID,
+            max_tokens: 600,
+            system: SYNTHESIS_SYSTEM_PROMPT,
+            messages: [{ role: "user", content: userMessage }],
+          },
+          { signal: upstreamAbort.signal },
+        );
 
         for await (const event of response) {
+          if (closed) break;
           if (
             event.type === "content_block_delta" &&
             event.delta.type === "text_delta"
@@ -63,12 +87,13 @@ export async function POST(req: Request) {
             controller.enqueue(encoder.encode(event.delta.text));
           }
         }
+        safeClose();
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "stream error";
-        controller.enqueue(encoder.encode(`\n\n[error: ${msg}]`));
-      } finally {
-        controller.close();
+        safeError(err);
       }
+    },
+    cancel() {
+      upstreamAbort.abort();
     },
   });
 

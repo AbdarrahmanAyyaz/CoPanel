@@ -60,6 +60,11 @@ export default function Page() {
     investor: "",
     customer: "",
   });
+  const columnErrorRef = useRef<Record<PersonaId, boolean>>({
+    engineer: false,
+    investor: false,
+    customer: false,
+  });
   const synthesisBuffer = useRef("");
   const synthesisStreamDone = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -78,8 +83,10 @@ export default function Page() {
     personaBuffers.current = { engineer: "", investor: "", customer: "" };
     personaStreamDone.current = { engineer: false, investor: false, customer: false };
     personaFinalText.current = { engineer: "", investor: "", customer: "" };
+    columnErrorRef.current = { engineer: false, investor: false, customer: false };
     synthesisBuffer.current = "";
     synthesisStreamDone.current = false;
+    abortRef.current = null;
     setColumns({
       engineer: idleColumn(),
       investor: idleColumn(),
@@ -163,34 +170,40 @@ export default function Page() {
         if (!res.ok || !res.body) {
           throw new Error(`persona ${id} ${res.status}`);
         }
-        // Mark as streaming on first byte.
         let firstByte = true;
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
+          if (cancelledRef.current) return;
           const text = decoder.decode(value, { stream: true });
           if (text.length === 0) continue;
           if (firstByte) {
             firstByte = false;
+            if (cancelledRef.current) return;
             setColumns((prev) => ({ ...prev, [id]: { ...prev[id], state: "streaming" } }));
           }
           personaBuffers.current[id] += text;
           personaFinalText.current[id] += text;
         }
-        // Flush trailing decoder bytes.
         const tail = decoder.decode();
         if (tail) {
           personaBuffers.current[id] += tail;
           personaFinalText.current[id] += tail;
         }
-        personaStreamDone.current[id] = true;
-      } catch (err) {
-        if ((err as { name?: string }).name === "AbortError") {
-          return;
+        if (cancelledRef.current) return;
+        // No bytes at all → treat as a soft error.
+        if (personaFinalText.current[id].trim().length === 0) {
+          columnErrorRef.current[id] = true;
+          setColumns((prev) => ({ ...prev, [id]: { ...prev[id], error: true } }));
         }
         personaStreamDone.current[id] = true;
+      } catch (err) {
+        if ((err as { name?: string }).name === "AbortError") return;
+        if (cancelledRef.current) return;
+        personaStreamDone.current[id] = true;
+        columnErrorRef.current[id] = true;
         setColumns((prev) => ({ ...prev, [id]: { ...prev[id], error: true, state: "done" } }));
       }
     },
@@ -202,10 +215,11 @@ export default function Page() {
       const reactions: Partial<Record<PersonaId, string>> = {};
       for (const id of PERSONA_ORDER) {
         const txt = personaFinalText.current[id].trim();
-        if (txt && !columns[id].error) reactions[id] = txt;
+        if (txt && !columnErrorRef.current[id]) reactions[id] = txt;
       }
       if (Object.keys(reactions).length === 0) {
         synthesisStreamDone.current = true;
+        if (cancelledRef.current) return;
         setSynthesis((prev) => ({ ...prev, state: "done", error: true }));
         return;
       }
@@ -223,10 +237,12 @@ export default function Page() {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
+          if (cancelledRef.current) return;
           const text = decoder.decode(value, { stream: true });
           if (text.length === 0) continue;
           if (firstByte) {
             firstByte = false;
+            if (cancelledRef.current) return;
             setSynthesis((prev) => ({ ...prev, state: "streaming" }));
           }
           synthesisBuffer.current += text;
@@ -236,11 +252,12 @@ export default function Page() {
         synthesisStreamDone.current = true;
       } catch (err) {
         if ((err as { name?: string }).name === "AbortError") return;
+        if (cancelledRef.current) return;
         synthesisStreamDone.current = true;
         setSynthesis((prev) => ({ ...prev, error: true }));
       }
     },
-    [pitch, columns],
+    [pitch],
   );
 
   const convene = useCallback(async () => {
@@ -250,6 +267,7 @@ export default function Page() {
     personaBuffers.current = { engineer: "", investor: "", customer: "" };
     personaStreamDone.current = { engineer: false, investor: false, customer: false };
     personaFinalText.current = { engineer: "", investor: "", customer: "" };
+    columnErrorRef.current = { engineer: false, investor: false, customer: false };
     synthesisBuffer.current = "";
     synthesisStreamDone.current = false;
     setSynthesis(idleSynthesis());
@@ -262,6 +280,23 @@ export default function Page() {
 
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+
+    // 30s watchdog: any persona that hasn't produced bytes by then is force-errored
+    // so the synthesis trigger isn't held hostage by a wedged stream.
+    const watchdog = setTimeout(() => {
+      if (cancelledRef.current) return;
+      for (const id of PERSONA_ORDER) {
+        if (!personaStreamDone.current[id]) {
+          personaStreamDone.current[id] = true;
+          columnErrorRef.current[id] = true;
+          setColumns((prev) => ({
+            ...prev,
+            [id]: { ...prev[id], error: true, state: "done" },
+          }));
+        }
+      }
+    }, 30000);
+    consumerTimers.current.add(watchdog);
 
     // Track when each column has finished revealing chunks.
     let finishedColumns = 0;
@@ -338,7 +373,7 @@ function Masthead() {
 function Hero() {
   return (
     <section className="mt-20 md:mt-24">
-      <h1 className="font-serif text-[clamp(48px,8vw,112px)] leading-[1.05] tracking-[-0.025em]">
+      <h1 className="font-serif text-[clamp(64px,8vw,112px)] leading-[1.05] tracking-[-0.025em]">
         Three reviewers.
         <br />
         One pitch.
@@ -425,7 +460,7 @@ function Bench({ columns, dimmed, phase }: BenchProps) {
           The Bench
         </span>
         <span className="h-px flex-1 bg-rule" />
-        <span className="font-serif italic text-[14px] text-fg-dim">
+        <span className="font-serif italic text-[18px] text-fg-dim md:text-[22px]">
           {benchStatus(columns, phase)}
         </span>
       </div>
@@ -436,6 +471,7 @@ function Bench({ columns, dimmed, phase }: BenchProps) {
             id={id}
             data={columns[id]}
             isFirst={idx === 0}
+            isLast={idx === PERSONA_ORDER.length - 1}
           />
         ))}
       </div>
@@ -459,20 +495,19 @@ interface ColumnProps {
   id: PersonaId;
   data: ColumnData;
   isFirst: boolean;
+  isLast: boolean;
 }
 
-function Column({ id, data, isFirst }: ColumnProps) {
+function Column({ id, data, isLast }: ColumnProps) {
   const persona = PERSONAS[id];
   const accent = persona.accentVar;
   const showAccent = data.state === "streaming" || data.state === "done";
 
   return (
     <article
-      className={`relative px-0 md:px-8 ${
-        isFirst
-          ? "border-t md:border-l md:border-t-0 border-rule pt-12 md:pt-0"
-          : "border-t md:border-l md:border-t-0 border-rule pt-12 md:pt-0"
-      } md:min-h-[320px]`}
+      className={`relative px-0 md:px-8 border-t md:border-l md:border-t-0 border-rule pt-12 md:pt-0 md:min-h-[320px] ${
+        isLast ? "md:border-r" : ""
+      }`}
     >
       {/* Left accent rule (desktop only) */}
       <div
@@ -655,10 +690,10 @@ function Synthesis({ synthesis, phase, onReset }: SynthesisProps) {
 
 function DropCapText({ chunks }: { chunks: string[] }) {
   if (chunks.length === 0) return null;
-  // Take the first character of the first chunk for the drop cap, render the rest normally.
+  // Find the first letter (skip leading whitespace, punctuation, quotes) to use as the drop cap.
   const first = chunks[0];
-  const trimmed = first.replace(/^\s+/, "");
-  if (trimmed.length === 0) {
+  const capMatch = first.match(/[A-Za-z]/);
+  if (!capMatch || capMatch.index === undefined) {
     return (
       <>
         {chunks.map((chunk, i) => (
@@ -669,8 +704,8 @@ function DropCapText({ chunks }: { chunks: string[] }) {
       </>
     );
   }
-  const cap = trimmed[0];
-  const capIdx = first.indexOf(cap);
+  const cap = capMatch[0];
+  const capIdx = capMatch.index;
   const firstWithoutCap = first.slice(0, capIdx) + first.slice(capIdx + 1);
   const restChunks = chunks.slice(1);
   return (
