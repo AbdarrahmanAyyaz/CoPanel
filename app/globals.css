@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #0a0a0a;
+  --bg-tint: #0f0f0f;
+  --fg: #f5f3ee;
+  --fg-dim: rgba(245, 243, 238, 0.62);
+  --fg-faint: rgba(245, 243, 238, 0.34);
+  --rule: rgba(245, 243, 238, 0.10);
+  --rule-soft: rgba(245, 243, 238, 0.05);
+  --engineer: #34d399;
+  --vc: #a78bfa;
+  --customer: #fbbf24;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--fg);
+}
+
+body {
+  background-image: radial-gradient(
+    ellipse at 50% 0%,
+    rgba(245, 243, 238, 0.025) 0%,
+    rgba(10, 10, 10, 0) 60%
+  );
+  background-attachment: fixed;
+}
+
+::selection {
+  background: rgba(245, 243, 238, 0.18);
+  color: var(--fg);
+}
+
+textarea {
+  background: transparent;
+  border: 0;
+  outline: 0;
+  resize: none;
+  width: 100%;
+  color: var(--fg);
+}
+
+textarea::placeholder {
+  color: var(--fg-faint);
+}
+
+button {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
