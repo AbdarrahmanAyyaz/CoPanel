@@ -23,6 +23,29 @@ export function activeProvider(): ProviderName | "none" {
 }
 
 /**
+ * Provider-specific call options. For Gemini "thinking" models (2.5+, 3+),
+ * thinking is on by default and silently consumes the maxOutputTokens budget
+ * — a 300-token cap can produce a 5-word reply if the model "thought" for
+ * 295 tokens. We don't need thinking for these short structured outputs, so
+ * disable it explicitly. No-op on Anthropic.
+ */
+export function callOptions() {
+  if (activeProvider() === "gemini") {
+    return {
+      providerOptions: {
+        google: {
+          thinkingConfig: {
+            thinkingBudget: 0,
+            includeThoughts: false,
+          },
+        },
+      },
+    };
+  }
+  return {};
+}
+
+/**
  * Returns a Vercel AI SDK language model for the configured provider.
  * Prefers Gemini if its key is present; falls back to Anthropic; throws if neither.
  */

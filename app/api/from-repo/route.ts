@@ -1,6 +1,6 @@
 import { generateText } from "ai";
 import { LIMITS } from "@/lib/limits";
-import { pickModel } from "@/lib/aiProvider";
+import { callOptions, pickModel } from "@/lib/aiProvider";
 import {
   checkRateLimit,
   disabledResponse,
@@ -219,7 +219,8 @@ export async function POST(req: Request) {
       model: pickModel(),
       system: SUMMARIZER_SYSTEM,
       prompt: userMessage,
-      maxOutputTokens: 300,
+      maxOutputTokens: 600,
+      ...callOptions(),
     });
     const description = text.trim();
     if (!description) {

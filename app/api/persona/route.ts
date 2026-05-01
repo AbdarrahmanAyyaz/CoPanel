@@ -1,7 +1,7 @@
 import { streamText } from "ai";
 import { PERSONAS, type PersonaId } from "@/lib/personas";
 import { LIMITS } from "@/lib/limits";
-import { pickModel } from "@/lib/aiProvider";
+import { callOptions, pickModel } from "@/lib/aiProvider";
 import {
   checkRateLimit,
   disabledResponse,
@@ -88,6 +88,7 @@ export async function POST(req: Request) {
           prompt: description,
           maxOutputTokens: 600,
           abortSignal: upstreamAbort.signal,
+          ...callOptions(),
         });
         for await (const chunk of result.textStream) {
           if (closed) break;
