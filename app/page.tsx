@@ -536,6 +536,10 @@ function Hero() {
         your AI agent design before you build it. Each scores it 0–100. The
         editor synthesizes a Pre-Build Readiness Brief.
       </p>
+      <p className="mt-8 max-w-[52ch] font-serif italic text-[18px] leading-[1.45] text-fg md:text-[20px]">
+        ↓ Paste an agent description below, or drop a public GitHub repo URL to
+        auto-fill it.
+      </p>
     </section>
   );
 }
@@ -578,8 +582,8 @@ function SubmissionCard(props: SubmissionProps) {
       }}
     >
       <div className="flex items-center gap-4">
-        <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-fg-faint">
-          Agent Description
+        <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-fg-dim">
+          <span className="text-fg-faint">①</span>&nbsp;&nbsp;Paste or type an agent description
         </span>
         <span className="h-px flex-1 bg-rule" />
       </div>
@@ -587,7 +591,7 @@ function SubmissionCard(props: SubmissionProps) {
         <textarea
           value={description}
           onChange={(e) => onChange(e.target.value)}
-          placeholder="Describe the AI agent you want to build."
+          placeholder="e.g. A patient intake agent for a telehealth platform that takes symptom descriptions and routes patients to specialists…"
           rows={5}
           maxLength={LIMITS.descriptionMaxChars}
           aria-label="Agent description"
@@ -608,8 +612,8 @@ function SubmissionCard(props: SubmissionProps) {
 
       <div className="mt-12 border-t border-rule-soft pt-6">
         <div className="flex items-center gap-4">
-          <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-fg-faint">
-            Or read from a public GitHub repo
+          <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-fg-dim">
+            <span className="text-fg-faint">②</span>&nbsp;&nbsp;Or auto-fill from a public GitHub repo
           </span>
           <span className="h-px flex-1 bg-rule-soft" />
         </div>
