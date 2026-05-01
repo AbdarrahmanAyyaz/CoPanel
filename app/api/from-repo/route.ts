@@ -3,6 +3,7 @@ import { MODEL_ID } from "@/lib/personas";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 interface FromRepoRequest {
   url?: unknown;

@@ -3,6 +3,7 @@ import { MODEL_ID, PERSONAS, type PersonaId } from "@/lib/personas";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 interface PersonaRequest {
   description?: unknown;
