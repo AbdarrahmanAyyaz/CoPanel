@@ -18,6 +18,6 @@ export const LIMITS = {
 } as const;
 
 export const PROVIDER_DEFAULTS = {
-  geminiModel: process.env.GEMINI_MODEL_ID || "gemini-3-flash",
+  geminiModel: process.env.GEMINI_MODEL_ID || "gemini-3-flash-preview",
   anthropicModel: process.env.ANTHROPIC_MODEL_ID || "claude-sonnet-4-5",
 } as const;
