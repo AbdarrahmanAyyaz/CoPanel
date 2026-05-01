@@ -72,6 +72,12 @@ function aggregateGrade(scores: Record<PersonaId, number | null>): {
 
 export default function Page() {
   const [description, setDescription] = useState(PREFILL);
+  const [repoUrl, setRepoUrl] = useState("");
+  const [repoFetching, setRepoFetching] = useState(false);
+  const [repoStatus, setRepoStatus] = useState<{
+    kind: "idle" | "ok" | "error";
+    text: string;
+  }>({ kind: "idle", text: "" });
   const [phase, setPhase] = useState<Phase>("idle");
   const [columns, setColumns] = useState<Record<PersonaId, ColumnData>>({
     privacy: idleColumn(),
@@ -403,6 +409,40 @@ export default function Page() {
     startSynthesisConsumer,
   ]);
 
+  const fetchFromRepo = useCallback(async () => {
+    const url = repoUrl.trim();
+    if (!url || repoFetching) return;
+    setRepoFetching(true);
+    setRepoStatus({ kind: "idle", text: "" });
+    try {
+      const res = await fetch("/api/from-repo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      if (!res.ok) {
+        const msg = (await res.text()) || `error ${res.status}`;
+        setRepoStatus({ kind: "error", text: msg });
+        return;
+      }
+      const data = (await res.json()) as { description?: string; repo?: string };
+      if (typeof data.description === "string" && data.description.trim().length > 0) {
+        setDescription(data.description.trim());
+        setRepoStatus({
+          kind: "ok",
+          text: data.repo ? `Read ${data.repo}.` : "Read repository.",
+        });
+      } else {
+        setRepoStatus({ kind: "error", text: "summarizer returned empty" });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "fetch failed";
+      setRepoStatus({ kind: "error", text: msg });
+    } finally {
+      setRepoFetching(false);
+    }
+  }, [repoUrl, repoFetching]);
+
   const canConvene = description.trim().length > 0 && phase === "idle";
   const submissionDimmed = phase !== "idle";
   const benchDimmed = phase === "synthesizing" || phase === "complete";
@@ -418,6 +458,11 @@ export default function Page() {
         canConvene={canConvene}
         phase={phase}
         dimmed={submissionDimmed}
+        repoUrl={repoUrl}
+        onRepoUrlChange={setRepoUrl}
+        onFetchRepo={fetchFromRepo}
+        repoFetching={repoFetching}
+        repoStatus={repoStatus}
       />
       <Bench
         columns={columns}
@@ -476,10 +521,28 @@ interface SubmissionProps {
   canConvene: boolean;
   phase: Phase;
   dimmed: boolean;
+  repoUrl: string;
+  onRepoUrlChange: (v: string) => void;
+  onFetchRepo: () => void;
+  repoFetching: boolean;
+  repoStatus: { kind: "idle" | "ok" | "error"; text: string };
 }
 
 function SubmissionCard(props: SubmissionProps) {
-  const { description, onChange, onConvene, canConvene, phase, dimmed } = props;
+  const {
+    description,
+    onChange,
+    onConvene,
+    canConvene,
+    phase,
+    dimmed,
+    repoUrl,
+    onRepoUrlChange,
+    onFetchRepo,
+    repoFetching,
+    repoStatus,
+  } = props;
+  const repoDisabled = phase !== "idle" || repoFetching;
   return (
     <section
       className="mt-[72px] transition-[opacity,filter] duration-[600ms] ease"
@@ -518,6 +581,50 @@ function SubmissionCard(props: SubmissionProps) {
         >
           Convene the panel
         </button>
+      </div>
+
+      <div className="mt-12 border-t border-rule-soft pt-6">
+        <div className="flex items-center gap-4">
+          <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-fg-faint">
+            Or read from a public GitHub repo
+          </span>
+          <span className="h-px flex-1 bg-rule-soft" />
+        </div>
+        <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-center">
+          <input
+            type="url"
+            value={repoUrl}
+            onChange={(e) => onRepoUrlChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                onFetchRepo();
+              }
+            }}
+            disabled={repoDisabled}
+            placeholder="https://github.com/owner/repo"
+            aria-label="GitHub repository URL"
+            className="flex-1 border-b border-rule bg-transparent pb-2 font-mono text-[13px] text-fg outline-none placeholder:text-fg-faint focus:border-fg-dim disabled:opacity-50"
+          />
+          <button
+            onClick={onFetchRepo}
+            disabled={repoDisabled || repoUrl.trim().length === 0}
+            className="border border-rule px-4 py-2 font-sans text-[12px] font-medium uppercase tracking-[0.06em] transition-colors hover:border-fg disabled:border-rule-soft disabled:text-fg-faint disabled:hover:border-rule-soft"
+          >
+            {repoFetching ? "Reading…" : "Read repo"}
+          </button>
+        </div>
+        {repoStatus.kind !== "idle" && (
+          <div
+            className="mt-3 font-mono text-[11px] uppercase tracking-[0.16em]"
+            style={{
+              color:
+                repoStatus.kind === "error" ? "#f87171" : "var(--fg-faint)",
+            }}
+          >
+            {repoStatus.text}
+          </div>
+        )}
       </div>
     </section>
   );
