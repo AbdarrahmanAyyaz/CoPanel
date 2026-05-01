@@ -59,7 +59,7 @@ Set `GITHUB_TOKEN` in `.env.local` to raise the GitHub API rate limit from 60/hr
 |---|---|---|
 | `GOOGLE_GENERATIVE_AI_API_KEY` *or* `GEMINI_API_KEY` | one provider key required | — |
 | `ANTHROPIC_API_KEY` | one provider key required | — |
-| `GEMINI_MODEL_ID` | optional | `gemini-2.5-flash` |
+| `GEMINI_MODEL_ID` | optional | `gemini-3-flash` |
 | `ANTHROPIC_MODEL_ID` | optional | `claude-sonnet-4-5` |
 | `GITHUB_TOKEN` | optional, but useful for `/api/from-repo` | — |
 | `PANEL_DISABLED` | optional kill switch (`"1"` = all routes return 503) | — |
