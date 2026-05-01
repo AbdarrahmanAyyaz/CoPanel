@@ -1,5 +1,13 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { MODEL_ID, PERSONAS, type PersonaId } from "@/lib/personas";
+import { streamText } from "ai";
+import { PERSONAS, type PersonaId } from "@/lib/personas";
+import { LIMITS } from "@/lib/limits";
+import { pickModel } from "@/lib/aiProvider";
+import {
+  checkRateLimit,
+  disabledResponse,
+  getClientIp,
+  isPanelDisabled,
+} from "@/lib/rateLimit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,6 +23,19 @@ function isPersonaId(v: unknown): v is PersonaId {
 }
 
 export async function POST(req: Request) {
+  if (isPanelDisabled()) return disabledResponse();
+
+  const ip = getClientIp(req);
+  const rl = checkRateLimit(ip, "persona");
+  if (!rl.ok) {
+    return new Response(rl.reason || "rate limited", {
+      status: 429,
+      headers: rl.retryAfterSeconds
+        ? { "Retry-After": String(rl.retryAfterSeconds) }
+        : undefined,
+    });
+  }
+
   let body: PersonaRequest;
   try {
     body = (await req.json()) as PersonaRequest;
@@ -27,10 +48,15 @@ export async function POST(req: Request) {
   const personaId = isPersonaId(body.persona) ? body.persona : null;
 
   if (!description) return new Response("description required", { status: 400 });
+  if (description.length > LIMITS.descriptionMaxChars) {
+    return new Response(
+      `description too long (max ${LIMITS.descriptionMaxChars} chars)`,
+      { status: 413 },
+    );
+  }
   if (!personaId) return new Response("invalid persona", { status: 400 });
 
   const persona = PERSONAS[personaId];
-  const client = new Anthropic();
   const upstreamAbort = new AbortController();
 
   const stream = new ReadableStream<Uint8Array>({
@@ -56,24 +82,16 @@ export async function POST(req: Request) {
         }
       };
       try {
-        const response = client.messages.stream(
-          {
-            model: MODEL_ID,
-            max_tokens: 600,
-            system: persona.systemPrompt,
-            messages: [{ role: "user", content: description }],
-          },
-          { signal: upstreamAbort.signal },
-        );
-
-        for await (const event of response) {
+        const result = streamText({
+          model: pickModel(),
+          system: persona.systemPrompt,
+          prompt: description,
+          maxOutputTokens: 600,
+          abortSignal: upstreamAbort.signal,
+        });
+        for await (const chunk of result.textStream) {
           if (closed) break;
-          if (
-            event.type === "content_block_delta" &&
-            event.delta.type === "text_delta"
-          ) {
-            controller.enqueue(encoder.encode(event.delta.text));
-          }
+          if (chunk.length > 0) controller.enqueue(encoder.encode(chunk));
         }
         safeClose();
       } catch (err) {

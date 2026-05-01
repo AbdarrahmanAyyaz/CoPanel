@@ -1,5 +1,12 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { MODEL_ID } from "@/lib/personas";
+import { generateText } from "ai";
+import { LIMITS } from "@/lib/limits";
+import { pickModel } from "@/lib/aiProvider";
+import {
+  checkRateLimit,
+  disabledResponse,
+  getClientIp,
+  isPanelDisabled,
+} from "@/lib/rateLimit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -138,6 +145,19 @@ const MAX_TOTAL_BYTES = 30000;
 const MAX_PER_FILE_BYTES = 12000;
 
 export async function POST(req: Request) {
+  if (isPanelDisabled()) return disabledResponse();
+
+  const ip = getClientIp(req);
+  const rl = checkRateLimit(ip, "fromRepo");
+  if (!rl.ok) {
+    return new Response(rl.reason || "rate limited", {
+      status: 429,
+      headers: rl.retryAfterSeconds
+        ? { "Retry-After": String(rl.retryAfterSeconds) }
+        : undefined,
+    });
+  }
+
   let body: FromRepoRequest;
   try {
     body = (await req.json()) as FromRepoRequest;
@@ -145,6 +165,12 @@ export async function POST(req: Request) {
     return new Response("invalid json", { status: 400 });
   }
   const url = typeof body.url === "string" ? body.url : "";
+  if (url.length > LIMITS.repoUrlMaxChars) {
+    return new Response(
+      `repo url too long (max ${LIMITS.repoUrlMaxChars} chars)`,
+      { status: 413 },
+    );
+  }
   const parsed = parseRepoUrl(url);
   if (!parsed) {
     return new Response(
@@ -188,27 +214,24 @@ export async function POST(req: Request) {
 
   const userMessage = `Repository: ${parsed.owner}/${parsed.repo}\n\n${sections.join("\n\n")}`;
 
-  const client = new Anthropic();
   try {
-    const resp = await client.messages.create({
-      model: MODEL_ID,
-      max_tokens: 300,
+    const { text } = await generateText({
+      model: pickModel(),
       system: SUMMARIZER_SYSTEM,
-      messages: [{ role: "user", content: userMessage }],
+      prompt: userMessage,
+      maxOutputTokens: 300,
     });
-    const description = resp.content
-      .filter(
-        (b): b is { type: "text"; text: string } =>
-          b.type === "text" && typeof (b as { text?: unknown }).text === "string",
-      )
-      .map((b) => b.text)
-      .join("\n")
-      .trim();
+    const description = text.trim();
     if (!description) {
       return new Response("summarizer returned empty", { status: 502 });
     }
+    // Trim to descriptionMaxChars so the textarea cap can't be tripped by the summary.
+    const safe =
+      description.length > LIMITS.descriptionMaxChars
+        ? description.slice(0, LIMITS.descriptionMaxChars).trim()
+        : description;
     return Response.json({
-      description,
+      description: safe,
       repo: `${parsed.owner}/${parsed.repo}`,
       filesRead: paths.slice(0, sections.length),
     });

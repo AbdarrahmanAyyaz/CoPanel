@@ -1,10 +1,17 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { streamText } from "ai";
 import {
-  MODEL_ID,
   SYNTHESIS_SYSTEM_PROMPT,
   buildSynthesisUserMessage,
   type PersonaId,
 } from "@/lib/personas";
+import { LIMITS } from "@/lib/limits";
+import { pickModel } from "@/lib/aiProvider";
+import {
+  checkRateLimit,
+  disabledResponse,
+  getClientIp,
+  isPanelDisabled,
+} from "@/lib/rateLimit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,7 +29,9 @@ function pickReactions(value: unknown): Partial<Record<PersonaId, string>> {
   const out: Partial<Record<PersonaId, string>> = {};
   for (const id of ["privacy", "compliance", "security"] as PersonaId[]) {
     const r = v[id];
-    if (typeof r === "string" && r.trim().length > 0) out[id] = r;
+    if (typeof r === "string" && r.trim().length > 0) {
+      out[id] = r.slice(0, LIMITS.reactionMaxChars);
+    }
   }
   return out;
 }
@@ -41,6 +50,19 @@ function pickScores(value: unknown): Partial<Record<PersonaId, number>> {
 }
 
 export async function POST(req: Request) {
+  if (isPanelDisabled()) return disabledResponse();
+
+  const ip = getClientIp(req);
+  const rl = checkRateLimit(ip, "synthesize");
+  if (!rl.ok) {
+    return new Response(rl.reason || "rate limited", {
+      status: 429,
+      headers: rl.retryAfterSeconds
+        ? { "Retry-After": String(rl.retryAfterSeconds) }
+        : undefined,
+    });
+  }
+
   let body: SynthesizeRequest;
   try {
     body = (await req.json()) as SynthesizeRequest;
@@ -54,6 +76,12 @@ export async function POST(req: Request) {
   const scores = pickScores(body.scores);
 
   if (!description) return new Response("description required", { status: 400 });
+  if (description.length > LIMITS.descriptionMaxChars) {
+    return new Response(
+      `description too long (max ${LIMITS.descriptionMaxChars} chars)`,
+      { status: 413 },
+    );
+  }
   if (Object.keys(reactions).length === 0) {
     return new Response("at least one reaction required", { status: 400 });
   }
@@ -63,7 +91,6 @@ export async function POST(req: Request) {
     reactions,
     scores,
   });
-  const client = new Anthropic();
   const upstreamAbort = new AbortController();
 
   const stream = new ReadableStream<Uint8Array>({
@@ -89,24 +116,16 @@ export async function POST(req: Request) {
         }
       };
       try {
-        const response = client.messages.stream(
-          {
-            model: MODEL_ID,
-            max_tokens: 1200,
-            system: SYNTHESIS_SYSTEM_PROMPT,
-            messages: [{ role: "user", content: userMessage }],
-          },
-          { signal: upstreamAbort.signal },
-        );
-
-        for await (const event of response) {
+        const result = streamText({
+          model: pickModel(),
+          system: SYNTHESIS_SYSTEM_PROMPT,
+          prompt: userMessage,
+          maxOutputTokens: 1200,
+          abortSignal: upstreamAbort.signal,
+        });
+        for await (const chunk of result.textStream) {
           if (closed) break;
-          if (
-            event.type === "content_block_delta" &&
-            event.delta.type === "text_delta"
-          ) {
-            controller.enqueue(encoder.encode(event.delta.text));
-          }
+          if (chunk.length > 0) controller.enqueue(encoder.encode(chunk));
         }
         safeClose();
       } catch (err) {

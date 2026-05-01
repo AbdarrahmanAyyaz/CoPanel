@@ -8,6 +8,7 @@ import {
   type PersonaId,
 } from "@/lib/personas";
 import { takeChunk } from "@/lib/chunkText";
+import { LIMITS } from "@/lib/limits";
 
 type Phase = "idle" | "running" | "synthesizing" | "complete";
 type ColumnState = "idle" | "pending" | "streaming" | "done";
@@ -481,6 +482,31 @@ export default function Page() {
   );
 }
 
+function SubmissionCounter({ description }: { description: string }) {
+  const trimmed = description.trim();
+  const empty = trimmed.length === 0;
+  const words = empty ? 0 : trimmed.split(/\s+/).filter(Boolean).length;
+  const chars = description.length;
+  const cap = LIMITS.descriptionMaxChars;
+  const pct = chars / cap;
+  const charColor =
+    pct >= 0.95 ? "#f87171" : pct >= 0.8 ? "#facc15" : "var(--fg-faint)";
+  return (
+    <span className="font-mono text-[11px] uppercase tracking-[0.16em]">
+      {empty ? (
+        <span className="text-fg-faint">—</span>
+      ) : (
+        <>
+          <span className="text-fg-faint">{words} words · </span>
+          <span style={{ color: charColor, transition: "color 200ms ease" }}>
+            {chars} / {cap}
+          </span>
+        </>
+      )}
+    </span>
+  );
+}
+
 function Masthead() {
   return (
     <header className="flex items-baseline justify-between border-b border-rule pb-6">
@@ -563,17 +589,14 @@ function SubmissionCard(props: SubmissionProps) {
           onChange={(e) => onChange(e.target.value)}
           placeholder="Describe the AI agent you want to build."
           rows={5}
+          maxLength={LIMITS.descriptionMaxChars}
           aria-label="Agent description"
           className="font-serif text-[22px] leading-[1.5] tracking-[-0.005em] md:text-[26px]"
           disabled={phase !== "idle"}
         />
       </div>
       <div className="mt-7 flex items-center justify-between">
-        <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-fg-faint">
-          {description.trim().length === 0
-            ? "—"
-            : `${description.trim().split(/\s+/).filter(Boolean).length} words`}
-        </span>
+        <SubmissionCounter description={description} />
         <button
           onClick={onConvene}
           disabled={!canConvene}
